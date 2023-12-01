@@ -20,23 +20,18 @@ export class Inertia {
     expectedMoveY = 0;
     isReturnX = false;
     isReturnY = false;
-
-    // 补偿值，高刷屏执行频率会变高导致动画距离变长（补偿基数定为 100）
-    compensate = 1;
+    outerStartInchingTimeX = 0;
+    outerStartInchingTimeY = 0;
 
     targetCoordinate = [0, 0];
     beforeCoordinate = [0, 0];
     currentCoordinate = [0, 0];
     trackPoints = [];
 
-    dragX = true;
-    dragY = true;
-
     boundX = null;
     boundY = null;
 
     bezier = null;
-    returnBezier = null;
     inchingBezier = null;
 
     moveSpeedX = 0;
@@ -54,13 +49,6 @@ export class Inertia {
             [.36, .97],
             [1, 1]
         ]);
-
-        this.returnBezier = new CubicBezier([
-            [0, 0],
-            [.28, .59,],
-            [.47, .76],
-            [1, 1]
-        ]);
         this.inchingBezier = new CubicBezier([
             [0, 0],
             [.32, .68,],
@@ -73,7 +61,6 @@ export class Inertia {
 
         getScreenFrameRate().then(r => {
             this.frame = r;
-            this.compensate = 100 / (1000 / this.frame);
         });
 
         this.targetEl.addEventListener("mousedown", this.cursorDown);
@@ -165,6 +152,8 @@ export class Inertia {
             this.expectedMoveY = 0;
             this.isReturnX = false;
             this.isReturnY = false;
+            this.outerStartInchingTimeX = 0;
+            this.outerStartInchingTimeY = 0;
             window.requestAnimationFrame(this.updateElCoordinateForUp);
         }
 
@@ -184,39 +173,41 @@ export class Inertia {
         }
         // console.log(`${beyond.allOver} && (${!this.isInching} || (${Math.abs(this.realTimeMoveSpeedX) < 0} && ${Math.abs(this.realTimeMoveSpeedY) < 0}))`);
 
-        if (!this.beforeBound || (this.beforeBound?.beyondX === 0 && beyond.beyondX !== 0) || (this.beforeBound?.beyondX !== 0 && beyond.beyondX === 0)) {
-            // 更新当前速度 x
-            this.moveSpeedX = this.realTimeMoveSpeedX;
-            // 约定 0.005 速度制动 1 像素
-            this.expectedMoveX = Math.abs(this.moveSpeedX / 0.005 * 1);
-        }
-        if (!this.beforeBound || (this.beforeBound?.beyondY === 0 && beyond.beyondY !== 0) || (this.beforeBound?.beyondY !== 0 && beyond.beyondY === 0)) {
-            // 更新当前速度 y
-            this.moveSpeedY = this.realTimeMoveSpeedY;
-            // 约定 0.005 速度制动 1 像素
-            this.expectedMoveY = Math.abs(this.moveSpeedY / 0.005 * 1);
-        }
-
         let intoRatio = 1 - this.inchingBezier.solve((timing - this.startInchingTime) / 1500);
         intoRatio = Math.max(0, Math.min(intoRatio, 1));
         let offsetX, offsetY;
         if (beyond.beyondX === 0) {
+            if (!this.beforeBound || this.beforeBound?.beyondX !== 0) {
+                // 更新当前速度 x
+                this.moveSpeedX = this.realTimeMoveSpeedX;
+            }
+
             this.isReturnX = false;
             // 带上补偿
             this.realTimeMoveSpeedX = this.moveSpeedX * intoRatio;
             offsetX = this.realTimeMoveSpeedX * 1 * (timing - this.lastInchingTime);
-            // offsetX = this.realTimeMoveSpeedX * 15 * this.compensate;
         } else {
-            // todo 不应当使用 beyondX 或 beyondY 距离，应从开始制动时就应当统计元素移动距离，用这个距离比上 distance 用作减速 outofRatio ->（getBoundingClientRect）
-            if (Math.abs(this.realTimeMoveSpeedX) > Math.abs(this.moveSpeedX * 0.5) && beyond.beyondX !== 0) {
-                this.isReturnX = false;
-                let outofRatioX = Math.min(Math.abs(beyond.beyondX), this.expectedMoveX);
-                outofRatioX = 1 - this.inchingBezier.solve(outofRatioX / this.expectedMoveX);
-                outofRatioX = Math.max(0.01, Math.min(outofRatioX, 0.99));
+            if (!this.beforeBound || this.beforeBound?.beyondX === 0){
+                // 目标速度
+                this.moveSpeedX = this.realTimeMoveSpeedX;
+                this.expectedMoveX = 0;
+                for (let i = this.frame; i < 300; i += this.frame) {
+                    let ratio = 1 - this.inchingBezier.solve(i / 300);
+                    ratio = Math.max(0, Math.min(ratio, 1));
+                    if (Math.abs(this.moveSpeedX * ratio) < Math.abs(this.moveSpeedX * 0.5)) {
+                        break;
+                    }
+                    this.expectedMoveX += this.moveSpeedX * ratio * 1 * this.frame;
+                }
+                this.moveSpeedX = this.realTimeMoveSpeedX = this.realTimeMoveSpeedX * 0.5;
+                this.outerStartInchingTimeX = timing - this.frame;
+            }
 
-                this.realTimeMoveSpeedX = this.moveSpeedX * outofRatioX;
-                offsetX = this.realTimeMoveSpeedX * 1 * (timing - this.lastInchingTime);
-                // offsetX = this.realTimeMoveSpeedX * 15 * this.compensate;
+            let outofRatioX = this.inchingBezier.solve((timing - this.outerStartInchingTimeX) / 150);
+            outofRatioX = Math.max(0, Math.min(outofRatioX, 1));
+            if (timing - this.outerStartInchingTimeX < 150) {
+                this.isReturnX = false;
+                offsetX = (this.expectedMoveX * outofRatioX) - beyond.beyondX;
             } else {
                 if (!this.isReturnX) {
                     this.isReturnX = true;
@@ -227,22 +218,36 @@ export class Inertia {
         }
 
         if (beyond.beyondY === 0) {
+            if (!this.beforeBound || this.beforeBound?.beyondY !== 0) {
+                // 更新当前速度 y
+                this.moveSpeedY = this.realTimeMoveSpeedY;
+            }
+
             this.isReturnY = false;
             // 带上补偿
             this.realTimeMoveSpeedY = this.moveSpeedY * intoRatio;
             offsetY = this.realTimeMoveSpeedY * 1 * (timing - this.lastInchingTime);
-            // offsetX = this.realTimeMoveSpeedY * 15 * this.compensate;
         } else {
-            // todo 不应当使用 beyondX 或 beyondY 距离，应从开始制动时就应当统计元素移动距离，用这个距离比上 distance 用作减速 outofRatio ->（getBoundingClientRect）
-            if (Math.abs(this.realTimeMoveSpeedY) > Math.abs(this.moveSpeedY * 0.5) && beyond.beyondY !== 0) {
-                this.isReturnY = false;
-                let outofRatioY = Math.min(Math.abs(beyond.beyondY), this.expectedMoveY);
-                outofRatioY = 1 - this.inchingBezier.solve(outofRatioY / this.expectedMoveY);
-                outofRatioY = Math.max(0.01, Math.min(outofRatioY, 0.99));
+            if (!this.beforeBound || this.beforeBound?.beyondY === 0){
+                // 目标速度
+                this.moveSpeedY = this.realTimeMoveSpeedY;
+                this.expectedMoveY = 0;
+                for (let i = this.frame; i < 300; i += this.frame) {
+                    let ratio = 1 - this.inchingBezier.solve(i / 300);
+                    ratio = Math.max(0, Math.min(ratio, 1));
+                    if (Math.abs(this.moveSpeedY * ratio) < Math.abs(this.moveSpeedY * 0.5)) {
+                        break;
+                    }
+                    this.expectedMoveY += this.moveSpeedY * ratio * 1 * this.frame;
+                }
+                this.moveSpeedY = this.realTimeMoveSpeedY = this.realTimeMoveSpeedY * 0.5;
+                this.outerStartInchingTimeY = timing - this.frame;
+            }
 
-                this.realTimeMoveSpeedY = this.moveSpeedY * outofRatioY;
-                offsetY = this.realTimeMoveSpeedY * 1 * (timing - this.lastInchingTime);
-                // offsetX = this.realTimeMoveSpeedY * 15 * this.compensate;
+            let outofRatioY = this.inchingBezier.solve((timing - this.outerStartInchingTimeY) / 150);
+            if (timing - this.outerStartInchingTimeY < 150) {
+                this.isReturnY = false;
+                offsetY = (this.expectedMoveY * outofRatioY) - beyond.beyondY;
             } else {
                 if (!this.isReturnY) {
                     this.isReturnY = true;
@@ -327,18 +332,6 @@ export class Inertia {
         let ratio = Math.min(Math.abs(beyond), this.sss) / this.sss;
         ratio = this.bezier.solve(ratio);
         return 1 - Math.max(0.01, Math.min(ratio, 0.99));
-    }
-
-    returnDragBezier = (beyond) => {
-        let ratio = Math.min(Math.abs(beyond), this.sss) / this.sss;
-        ratio = this.returnBezier.solve(ratio);
-        return 1 - Math.max(0.01, Math.min(ratio, 0.99));
-    }
-
-    homingBezier = (ratio) => {
-        // console.log(ratio);
-        ratio = this.returnBezier.solve(ratio);
-        return Math.max(0.01, Math.min(ratio, 0.99));
     }
 
     checkBound = () => {
