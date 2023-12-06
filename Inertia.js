@@ -12,7 +12,8 @@ export class Inertia {
     isUpdateElCoordinate = false;
     // 是否在缓动中
     isInching = false;
-    startInchingTime = 0;
+    startInchingTimeX = 0;
+    startInchingTimeY = 0;
     lastInchingTime = 0;
     frame = 11.11;
     beforeBound = null;
@@ -142,10 +143,11 @@ export class Inertia {
 
         let beyond = this.checkBound();
 
-        if (Math.abs(this.moveSpeedX) > 0.1 || Math.abs(this.moveSpeedY) > 0.1 || !beyond.allOver) {
+        if (Math.abs(this.moveSpeedX) > 0.4 || Math.abs(this.moveSpeedY) > 0.4 || !beyond.allOver) {
             // 速度大于某个值或不全在内部或没完全覆盖执行
             this.isInching = true;
-            this.startInchingTime = -1;
+            this.startInchingTimeX = -1;
+            this.startInchingTimeY = -1;
             this.lastInchingTime = -1;
             this.beforeBound = null;
             this.expectedMoveX = 0;
@@ -161,9 +163,8 @@ export class Inertia {
     }
 
     updateElCoordinateForUp = (timing) => {
-        if (this.startInchingTime === -1 && this.lastInchingTime === -1) {
-            this.startInchingTime = timing - this.frame;
-            this.lastInchingTime = this.startInchingTime;
+        if (this.startInchingTimeX === -1 && this.startInchingTimeY === -1 && this.lastInchingTime === -1) {
+            this.lastInchingTime = this.startInchingTimeX = this.startInchingTimeY = timing - this.frame;
         }
 
         let beyond = this.checkBound();
@@ -172,9 +173,8 @@ export class Inertia {
             return;
         }
         // console.log(`${beyond.allOver} && (${!this.isInching} || (${Math.abs(this.realTimeMoveSpeedX) < 0} && ${Math.abs(this.realTimeMoveSpeedY) < 0}))`);
+        this.startInchingTimeX = this.startInchingTimeY = Math.max(this.startInchingTimeX, this.startInchingTimeY);
 
-        let intoRatio = 1 - this.inchingBezier.solve((timing - this.startInchingTime) / 1500);
-        intoRatio = Math.max(0, Math.min(intoRatio, 1));
         let offsetX, offsetY;
         if (beyond.beyondX === 0) {
             if (!this.beforeBound || this.beforeBound?.beyondX !== 0) {
@@ -183,16 +183,18 @@ export class Inertia {
             }
 
             this.isReturnX = false;
-            // 带上补偿
-            this.realTimeMoveSpeedX = this.moveSpeedX * intoRatio;
+            let intoRatioX = 1 - this.inchingBezier.solve((timing - this.startInchingTimeX) / 1500);
+            intoRatioX = Math.max(0, Math.min(intoRatioX, 1));
+            this.realTimeMoveSpeedX = this.moveSpeedX * intoRatioX;
             offsetX = this.realTimeMoveSpeedX * 1 * (timing - this.lastInchingTime);
         } else {
-            if (!this.beforeBound || this.beforeBound?.beyondX === 0){
+            this.startInchingTimeX += timing - this.lastInchingTime;
+            if (!this.beforeBound || this.beforeBound?.beyondX === 0) {
                 // 目标速度
                 this.moveSpeedX = this.realTimeMoveSpeedX;
                 this.expectedMoveX = 0;
-                for (let i = this.frame; i < 300; i += this.frame) {
-                    let ratio = 1 - this.inchingBezier.solve(i / 300);
+                for (let i = this.frame; i < 250; i += this.frame) {
+                    let ratio = 1 - this.inchingBezier.solve(i / 250);
                     ratio = Math.max(0, Math.min(ratio, 1));
                     if (Math.abs(this.moveSpeedX * ratio) < Math.abs(this.moveSpeedX * 0.5)) {
                         break;
@@ -224,16 +226,18 @@ export class Inertia {
             }
 
             this.isReturnY = false;
-            // 带上补偿
-            this.realTimeMoveSpeedY = this.moveSpeedY * intoRatio;
+            let intoRatioY = 1 - this.inchingBezier.solve((timing - this.startInchingTimeY) / 1500);
+            intoRatioY = Math.max(0, Math.min(intoRatioY, 1));
+            this.realTimeMoveSpeedY = this.moveSpeedY * intoRatioY;
             offsetY = this.realTimeMoveSpeedY * 1 * (timing - this.lastInchingTime);
         } else {
-            if (!this.beforeBound || this.beforeBound?.beyondY === 0){
+            this.startInchingTimeY += timing - this.lastInchingTime;
+            if (!this.beforeBound || this.beforeBound?.beyondY === 0) {
                 // 目标速度
                 this.moveSpeedY = this.realTimeMoveSpeedY;
                 this.expectedMoveY = 0;
-                for (let i = this.frame; i < 300; i += this.frame) {
-                    let ratio = 1 - this.inchingBezier.solve(i / 300);
+                for (let i = this.frame; i < 250; i += this.frame) {
+                    let ratio = 1 - this.inchingBezier.solve(i / 250);
                     ratio = Math.max(0, Math.min(ratio, 1));
                     if (Math.abs(this.moveSpeedY * ratio) < Math.abs(this.moveSpeedY * 0.5)) {
                         break;
