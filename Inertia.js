@@ -12,17 +12,25 @@ export class Inertia {
     isUpdateElCoordinate = false;
     // 是否在缓动中
     isInching = false;
-    startInchingTimeX = 0;
-    startInchingTimeY = 0;
     lastInchingTime = 0;
     frame = 11.11;
     beforeBound = null;
-    expectedMoveX = 0;
-    expectedMoveY = 0;
-    isReturnX = false;
-    isReturnY = false;
-    outerStartInchingTimeX = 0;
-    outerStartInchingTimeY = 0;
+    x = {
+        startInchingTime: -1,
+        isReturn: false,
+        expectedMove: 0,
+        outerStartInchingTime: 0,
+        moveSpeed: 0,
+        realTimeMoveSpeed: 0
+    }
+    y = {
+        startInchingTime: -1,
+        isReturn: false,
+        expectedMove: 0,
+        outerStartInchingTime: 0,
+        moveSpeed: 0,
+        realTimeMoveSpeed: 0
+    }
 
     targetCoordinate = [0, 0];
     beforeCoordinate = [0, 0];
@@ -34,11 +42,6 @@ export class Inertia {
 
     bezier = null;
     inchingBezier = null;
-
-    moveSpeedX = 0;
-    moveSpeedY = 0;
-    realTimeMoveSpeedX = 0;
-    realTimeMoveSpeedY = 0;
 
     constructor({boundX, boundY}) {
         this.targetEl = document.getElementById("inertia-move");
@@ -129,143 +132,180 @@ export class Inertia {
         let offsetY = lastPoint.y - firstPoint.y;
         let offsetTime = lastPoint.time - firstPoint.time;
 
-        this.moveSpeedX = (offsetX / offsetTime) || 0;
-        this.moveSpeedY = (offsetY / offsetTime) || 0;
-        this.realTimeMoveSpeedX = this.moveSpeedX;
-        this.realTimeMoveSpeedY = this.moveSpeedY;
+        this.x.moveSpeed = (offsetX / offsetTime) || 0;
+        this.y.moveSpeed = (offsetY / offsetTime) || 0;
+        this.x.realTimeMoveSpeed = this.x.moveSpeed;
+        this.y.realTimeMoveSpeed = this.y.moveSpeed;
+
+        this.x.startInchingTime = -1;
+        this.x.isReturn = false;
+        this.x.expectedMove = 0;
+        this.x.outerStartInchingTime = 0;
+
+        this.y.startInchingTime = -1;
+        this.y.isReturn = false;
+        this.y.expectedMove = 0;
+        this.y.outerStartInchingTime = 0;
+
+        this.lastInchingTime = -1;
 
         console.table({
             "x 移动距离": offsetX,
-            "x 移动速度": this.moveSpeedX,
+            "x 移动速度": this.x.moveSpeed,
             "y 移动距离": offsetY,
-            "y 移动速度": this.moveSpeedY
+            "y 移动速度": this.y.moveSpeed
         });
 
         let beyond = this.checkBound();
 
-        if (Math.abs(this.moveSpeedX) > 0.4 || Math.abs(this.moveSpeedY) > 0.4 || !beyond.allOver) {
+        if (Math.abs(this.x.moveSpeed) > 0.4 || Math.abs(this.y.moveSpeed) > 0.4) {
             // 速度大于某个值或不全在内部或没完全覆盖执行
             this.isInching = true;
-            this.startInchingTimeX = -1;
-            this.startInchingTimeY = -1;
-            this.lastInchingTime = -1;
             this.beforeBound = null;
-            this.expectedMoveX = 0;
-            this.expectedMoveY = 0;
-            this.isReturnX = false;
-            this.isReturnY = false;
-            this.outerStartInchingTimeX = 0;
-            this.outerStartInchingTimeY = 0;
+
             window.requestAnimationFrame(this.updateElCoordinateForUp);
+        } else {
+            if (!beyond.allOver) {
+                this.isInching = true;
+                window.requestAnimationFrame(this.updateElCoordinateForReturn);
+            }
         }
 
         this.removeEvents();
     }
 
-    updateElCoordinateForUp = (timing) => {
-        if (this.startInchingTimeX === -1 && this.startInchingTimeY === -1 && this.lastInchingTime === -1) {
-            this.lastInchingTime = this.startInchingTimeX = this.startInchingTimeY = timing - this.frame;
+    updateElCoordinateForReturn = (timing) => {
+        if (this.x.startInchingTime === -1 && this.y.startInchingTime === -1) {
+            this.x.startInchingTime = this.y.startInchingTime = timing - this.frame;
+        }
+
+        let beyond = this.checkBound();
+        if (!this.isInching || beyond.allOver) {
+            return;
+        }
+
+        if (beyond.beyondX !== 0) {
+            let ratioX = this.bezier.solve((timing - this.y.startInchingTime) / 1000);
+            ratioX = Math.max(0, Math.min(ratioX, 1));
+            this.targetCoordinate[0] -= beyond.beyondX * ratioX;
+        }
+        if (beyond.beyondY !== 0) {
+            let ratioY = this.bezier.solve((timing - this.y.startInchingTime) / 1000);
+            ratioY = Math.max(0, Math.min(ratioY, 1));
+            this.targetCoordinate[1] -= beyond.beyondY * ratioY;
+        }
+
+        this.targetEl.style.transform = `translate(${this.targetCoordinate[0]}px, ${this.targetCoordinate[1]}px)`;
+        window.requestAnimationFrame(this.updateElCoordinateForReturn);
+    }
+
+    calcOffset = async (xy, beyondXY, beforeBeyondXY, timing) => {
+        let offset;
+        if (beyondXY === 0) {
+            if (beforeBeyondXY === undefined || beforeBeyondXY !== 0) {
+                xy.moveSpeed = xy.realTimeMoveSpeed;
+            }
+
+            let ratio = 1 - this.inchingBezier.solve((timing - xy.startInchingTime) / 1500);
+            ratio = Math.max(0, Math.min(ratio, 1));
+            xy.realTimeMoveSpeed = xy.moveSpeed * ratio;
+            // 由补偿换为按时间计算，更加准确（避免在高刷屏中动画执行速度变快）
+            offset = xy.realTimeMoveSpeed * 1 * (timing - this.lastInchingTime);
+        } else {
+            xy.startInchingTime += timing - this.lastInchingTime;
+
+            let totalRatio = 0;
+            let expectMoveSpeedX = 0;
+            if (beforeBeyondXY === undefined || beforeBeyondXY === 0) {
+                xy.expectedMove = 0;
+                for (let i = this.frame; i < 250; i += this.frame) {
+                    let ratio = 1 - this.inchingBezier.solve(i / 250);
+                    ratio = Math.max(0, Math.min(ratio, 1));
+                    if (ratio < 0.5) {
+                        break;
+                    }
+                    totalRatio += ratio;
+                }
+                xy.expectedMove = totalRatio * xy.realTimeMoveSpeed * this.frame * 1;
+
+                if (beforeBeyondXY === undefined) {
+                    // mouseup 时已越界
+                    // 对速度补偿
+                    expectMoveSpeedX = beyondXY / totalRatio / this.frame / 1 * 0.5;
+                    if (xy.realTimeMoveSpeed < 0) {
+                        xy.moveSpeed = xy.realTimeMoveSpeed = Math.min(-Math.abs(expectMoveSpeedX), xy.realTimeMoveSpeed);
+                    } else if (xy.realTimeMoveSpeed > 0) {
+                        xy.moveSpeed = xy.realTimeMoveSpeed = Math.max(Math.abs(expectMoveSpeedX), xy.realTimeMoveSpeed);
+                    } else {
+                        if (beyondXY < 0) {
+                            xy.moveSpeed = xy.realTimeMoveSpeed = Math.abs(expectMoveSpeedX);
+                        } else if (beyondXY > 0) {
+                            xy.moveSpeed = xy.realTimeMoveSpeed = -Math.abs(expectMoveSpeedX);
+                        }
+                    }
+
+                    if ((beyondXY < xy.expectedMove && beyondXY < 0 && xy.realTimeMoveSpeed < 0)
+                        || (beyondXY > xy.expectedMove && beyondXY > 0 && xy.realTimeMoveSpeed > 0)
+                        || beyondXY < 0 && xy.realTimeMoveSpeed > 0
+                        || beyondXY > 0 && xy.realTimeMoveSpeed < 0) {
+                        // 超过预测距离，设置值以触发直接返回
+                        xy.outerStartInchingTime = timing - 150;
+                    } else {
+                        // 未超过预测距离，设置已运动距离所需时间
+                        xy.outerStartInchingTime = timing - (beyondXY / xy.expectedMove * 150);
+                    }
+                } else {
+                    xy.moveSpeed = xy.realTimeMoveSpeed = xy.realTimeMoveSpeed * 0.5;
+                    xy.outerStartInchingTime = timing - this.frame;
+                }
+            }
+
+            let outofRatioX = this.inchingBezier.solve((timing - xy.outerStartInchingTime) / 150);
+            outofRatioX = Math.max(0, Math.min(outofRatioX, 1));
+            if (timing - xy.outerStartInchingTime < 150) {
+                offset = (xy.expectedMove * outofRatioX) - beyondXY;
+            } else {
+                xy.isReturn = true;
+                if (beyondXY < 0) {
+                    xy.realTimeMoveSpeed = Math.abs(xy.realTimeMoveSpeed);
+                } else if (beyondXY > 0) {
+                    xy.realTimeMoveSpeed = -Math.abs(xy.realTimeMoveSpeed);
+                }
+                offset = xy.realTimeMoveSpeed * 1 * (timing - this.lastInchingTime);
+            }
+        }
+
+        return offset;
+    }
+
+    updateElCoordinateForUp = async (timing) => {
+        if (this.x.startInchingTime === -1 && this.y.startInchingTime === -1 && this.lastInchingTime === -1) {
+            this.lastInchingTime = this.x.startInchingTime = this.y.startInchingTime = timing - this.frame;
         }
 
         let beyond = this.checkBound();
 
-        if (!this.isInching || (beyond.allOver && (Math.abs(this.realTimeMoveSpeedX) <= 0 && Math.abs(this.realTimeMoveSpeedY) <= 0))) {
+        if (!this.isInching || (beyond.allOver && (Math.abs(this.x.realTimeMoveSpeed) <= 0 && Math.abs(this.y.realTimeMoveSpeed) <= 0))) {
             return;
         }
-        // console.log(`${beyond.allOver} && (${!this.isInching} || (${Math.abs(this.realTimeMoveSpeedX) < 0} && ${Math.abs(this.realTimeMoveSpeedY) < 0}))`);
-        this.startInchingTimeX = this.startInchingTimeY = Math.max(this.startInchingTimeX, this.startInchingTimeY);
-
-        let offsetX, offsetY;
-        if (beyond.beyondX === 0) {
-            if (!this.beforeBound || this.beforeBound?.beyondX !== 0) {
-                // 更新当前速度 x
-                this.moveSpeedX = this.realTimeMoveSpeedX;
-            }
-
-            this.isReturnX = false;
-            let intoRatioX = 1 - this.inchingBezier.solve((timing - this.startInchingTimeX) / 1500);
-            intoRatioX = Math.max(0, Math.min(intoRatioX, 1));
-            this.realTimeMoveSpeedX = this.moveSpeedX * intoRatioX;
-            offsetX = this.realTimeMoveSpeedX * 1 * (timing - this.lastInchingTime);
-        } else {
-            this.startInchingTimeX += timing - this.lastInchingTime;
-            if (!this.beforeBound || this.beforeBound?.beyondX === 0) {
-                // 目标速度
-                this.moveSpeedX = this.realTimeMoveSpeedX;
-                this.expectedMoveX = 0;
-                for (let i = this.frame; i < 250; i += this.frame) {
-                    let ratio = 1 - this.inchingBezier.solve(i / 250);
-                    ratio = Math.max(0, Math.min(ratio, 1));
-                    if (Math.abs(this.moveSpeedX * ratio) < Math.abs(this.moveSpeedX * 0.5)) {
-                        break;
-                    }
-                    this.expectedMoveX += this.moveSpeedX * ratio * 1 * this.frame;
-                }
-                this.moveSpeedX = this.realTimeMoveSpeedX = this.realTimeMoveSpeedX * 0.5;
-                this.outerStartInchingTimeX = timing - this.frame;
-            }
-
-            let outofRatioX = this.inchingBezier.solve((timing - this.outerStartInchingTimeX) / 150);
-            outofRatioX = Math.max(0, Math.min(outofRatioX, 1));
-            if (timing - this.outerStartInchingTimeX < 150) {
-                this.isReturnX = false;
-                offsetX = (this.expectedMoveX * outofRatioX) - beyond.beyondX;
-            } else {
-                if (!this.isReturnX) {
-                    this.isReturnX = true;
-                    this.realTimeMoveSpeedX = -this.realTimeMoveSpeedX;
-                }
-                offsetX = this.realTimeMoveSpeedX * 1 * (timing - this.lastInchingTime);
-            }
+        if (timing - this.lastInchingTime > this.frame * 2) {
+            // https://developer.mozilla.org/zh-CN/docs/Web/API/window/requestAnimationFrame
+            // 大多数浏览器处于后台时 requestAnimationFrame 会暂停执行，此处修正时间
+            let offsetTime = timing - this.lastInchingTime - this.frame;
+            this.lastInchingTime += offsetTime;
+            this.x.startInchingTime += offsetTime;
+            this.y.startInchingTime += offsetTime;
+            this.x.outerStartInchingTime += offsetTime;
+            this.y.outerStartInchingTime += offsetTime;
         }
+        this.x.startInchingTime = this.y.startInchingTime = Math.min(this.x.startInchingTime, this.y.startInchingTime);
 
-        if (beyond.beyondY === 0) {
-            if (!this.beforeBound || this.beforeBound?.beyondY !== 0) {
-                // 更新当前速度 y
-                this.moveSpeedY = this.realTimeMoveSpeedY;
-            }
-
-            this.isReturnY = false;
-            let intoRatioY = 1 - this.inchingBezier.solve((timing - this.startInchingTimeY) / 1500);
-            intoRatioY = Math.max(0, Math.min(intoRatioY, 1));
-            this.realTimeMoveSpeedY = this.moveSpeedY * intoRatioY;
-            offsetY = this.realTimeMoveSpeedY * 1 * (timing - this.lastInchingTime);
-        } else {
-            this.startInchingTimeY += timing - this.lastInchingTime;
-            if (!this.beforeBound || this.beforeBound?.beyondY === 0) {
-                // 目标速度
-                this.moveSpeedY = this.realTimeMoveSpeedY;
-                this.expectedMoveY = 0;
-                for (let i = this.frame; i < 250; i += this.frame) {
-                    let ratio = 1 - this.inchingBezier.solve(i / 250);
-                    ratio = Math.max(0, Math.min(ratio, 1));
-                    if (Math.abs(this.moveSpeedY * ratio) < Math.abs(this.moveSpeedY * 0.5)) {
-                        break;
-                    }
-                    this.expectedMoveY += this.moveSpeedY * ratio * 1 * this.frame;
-                }
-                this.moveSpeedY = this.realTimeMoveSpeedY = this.realTimeMoveSpeedY * 0.5;
-                this.outerStartInchingTimeY = timing - this.frame;
-            }
-
-            let outofRatioY = this.inchingBezier.solve((timing - this.outerStartInchingTimeY) / 150);
-            if (timing - this.outerStartInchingTimeY < 150) {
-                this.isReturnY = false;
-                offsetY = (this.expectedMoveY * outofRatioY) - beyond.beyondY;
-            } else {
-                if (!this.isReturnY) {
-                    this.isReturnY = true;
-                    this.realTimeMoveSpeedY = -this.realTimeMoveSpeedY;
-                }
-                offsetY = this.realTimeMoveSpeedY * 1 * (timing - this.lastInchingTime);
-            }
-        }
-
-        // console.log(this.realTimeMoveSpeedX, this.realTimeMoveSpeedY);
-
-        this.targetCoordinate[0] += offsetX;
-        this.targetCoordinate[1] += offsetY;
-
+        let result = await Promise.all([
+            this.calcOffset(this.x, beyond.beyondX, this.beforeBound?.beyondX, timing),
+            this.calcOffset(this.y, beyond.beyondY, this.beforeBound?.beyondY, timing)
+        ]);
+        this.targetCoordinate[0] += result[0];
+        this.targetCoordinate[1] += result[1];
 
         this.beforeBound = beyond;
         this.lastInchingTime = timing;
