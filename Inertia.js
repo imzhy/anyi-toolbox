@@ -1,11 +1,21 @@
 const html = document.getElementsByTagName("html")[0];
 import {getScreenFrameRate} from "./CommonTool.js";
-import {CubicBezier} from "./CubicBezier.js";
+import {Bezier} from "./Bezier.js";
+
+const RETURN_TIME = 750;
 
 export class Inertia {
+    // 弹性
+    elastic = true;
+    // 弹性最大距离（px）
+    elasticMaxDistance = 200;
+    // 反弹
+    rebound = false;
+    // 回调函数
+    outputCoordinate = null;
+
     // 目标 dom
     targetEl = null;
-    parentEl = null;
 
     // 是否按下
     isCursorDown = false;
@@ -14,7 +24,7 @@ export class Inertia {
     isInching = false;
     lastInchingTime = 0;
     frame = 11.11;
-    beforeBound = null;
+    beforeBeyond = null;
     x = {
         startInchingTime: -1,
         isReturn: false,
@@ -35,38 +45,37 @@ export class Inertia {
     targetCoordinate = [0, 0];
     beforeCoordinate = [0, 0];
     currentCoordinate = [0, 0];
+    simulateClientRect = null;
     trackPoints = [];
 
     boundX = null;
     boundY = null;
 
-    bezier = null;
-    inchingBezier = null;
+    bezier = new Bezier(.16, .53, .36, .97);
+    inchingBezier = new Bezier(.32, .68, .42, .93);
+    returnBezier = new Bezier(.17, .69, .45, .88);
 
-    constructor({boundX, boundY}) {
-        this.targetEl = document.getElementById("inertia-move");
-        this.parentEl = this.targetEl.parentElement;
-
-        this.bezier = new CubicBezier([
-            [0, 0],
-            [.16, .53,],
-            [.36, .97],
-            [1, 1]
-        ]);
-        this.inchingBezier = new CubicBezier([
-            [0, 0],
-            [.32, .68,],
-            [.42, .93],
-            [1, 1]
-        ]);
-
-        this.boundX = boundX;
-        this.boundY = boundY;
-
+    constructor({boundX, boundY, elastic, elasticMaxDistance, rebound, outputCoordinate}) {
         getScreenFrameRate().then(r => {
             this.frame = r;
         });
 
+        this.boundX = Array.isArray(boundX) ? boundX : [];
+        this.boundY = Array.isArray(boundY) ? boundY : [];
+
+        if (void(0) !== elastic) {
+            this.elastic = !!elastic;
+        }
+        if (Number.isSafeInteger(elasticMaxDistance)) {
+            this.elasticMaxDistance = Math.max(0, this.elasticMaxDistance);
+        }
+        if (void(0) !== rebound) {
+            this.rebound = !!rebound;
+        }
+
+        this.outputCoordinate = outputCoordinate;
+
+        this.targetEl = document.getElementById("inertia-move");
         this.targetEl.addEventListener("mousedown", this.cursorDown);
     }
 
@@ -89,19 +98,20 @@ export class Inertia {
     cursorDown = (event) => {
         console.clear();
         if (!this.isCursorDown) {
-            let parentRectBound = this.parentEl.getBoundingClientRect();
-            this.boundX = [parentRectBound.left, parentRectBound.right];
-            this.boundY = [parentRectBound.top, parentRectBound.bottom];
-
             let targetRectBound = this.targetEl.getBoundingClientRect();
-            this.targetCoordinate = [targetRectBound.left - parentRectBound.left, targetRectBound.top - parentRectBound.top];
-
-            this.isCursorDown = true;
+            this.targetCoordinate = [targetRectBound.left, targetRectBound.top];
             this.beforeCoordinate = this.currentCoordinate = [event.clientX, event.clientY];
+            this.simulateClientRect = {
+                left: targetRectBound.left,
+                right: targetRectBound.right,
+                top: targetRectBound.top,
+                bottom: targetRectBound.bottom
+            }
 
             this.trackPoints = [];
             this.recordTrackPoints(this.currentCoordinate);
 
+            this.isCursorDown = true;
             this.isUpdateElCoordinate = false;
             this.isInching = false;
 
@@ -116,7 +126,7 @@ export class Inertia {
             this.recordTrackPoints(this.currentCoordinate);
             if (!this.isUpdateElCoordinate) {
                 this.isUpdateElCoordinate = true;
-                window.requestAnimationFrame(this.updateElCoordinate);
+                window.requestAnimationFrame(this.updateElCoordinateByMove);
             }
         }
     }
@@ -156,17 +166,20 @@ export class Inertia {
             "y 移动速度": this.y.moveSpeed
         });
 
-        let beyond = this.checkBound();
+        let beyond = this.checkBound(this.targetEl.getBoundingClientRect());
 
         if (Math.abs(this.x.moveSpeed) > 0.4 || Math.abs(this.y.moveSpeed) > 0.4) {
             // 速度大于某个值或不全在内部或没完全覆盖执行
             this.isInching = true;
-            this.beforeBound = null;
+            this.beforeBeyond = null;
 
             window.requestAnimationFrame(this.updateElCoordinateForUp);
         } else {
-            if (!beyond.allOver) {
+            if (beyond.escape) {
                 this.isInching = true;
+                this.beforeBeyond = null;
+                this.maxBeyond = [];
+                this.simulateMaxBeyond = [];
                 window.requestAnimationFrame(this.updateElCoordinateForReturn);
             }
         }
@@ -174,39 +187,86 @@ export class Inertia {
         this.removeEvents();
     }
 
+    maxBeyond = [];
+    simulateMaxBeyond = [];
     updateElCoordinateForReturn = (timing) => {
-        if (this.x.startInchingTime === -1 && this.y.startInchingTime === -1) {
-            this.x.startInchingTime = this.y.startInchingTime = timing - this.frame;
-        }
-
-        let beyond = this.checkBound();
-        if (!this.isInching || beyond.allOver) {
+        let targetRectBound = this.targetEl.getBoundingClientRect();
+        let beyond = this.checkBound(targetRectBound);
+        let simulateBeyond = this.checkBound(this.simulateClientRect);
+        if (!this.isInching || (!beyond.escape && !simulateBeyond.escape)) {
             return;
         }
 
-        if (beyond.beyondX !== 0) {
-            let ratioX = this.bezier.solve((timing - this.y.startInchingTime) / 1000);
-            ratioX = Math.max(0, Math.min(ratioX, 1));
-            this.targetCoordinate[0] -= beyond.beyondX * ratioX;
-        }
-        if (beyond.beyondY !== 0) {
-            let ratioY = this.bezier.solve((timing - this.y.startInchingTime) / 1000);
-            ratioY = Math.max(0, Math.min(ratioY, 1));
-            this.targetCoordinate[1] -= beyond.beyondY * ratioY;
+        if (this.x.startInchingTime === -1 && this.y.startInchingTime === -1) {
+            this.x.startInchingTime = this.y.startInchingTime = timing - this.frame;
+            this.maxBeyond = beyond;
+            this.simulateMaxBeyond = simulateBeyond;
         }
 
-        this.targetEl.style.transform = `translate(${this.targetCoordinate[0]}px, ${this.targetCoordinate[1]}px)`;
+        let offsetX = 0, offsetY = 0, simulateOffsetX = 0, simulateOffsetY = 0;
+
+        if (beyond.beyondX !== 0) {
+            let timeOffset = (timing - this.x.startInchingTime) > RETURN_TIME ? RETURN_TIME : (timing - this.x.startInchingTime);
+            let ratio = this.returnBezier.easing(timeOffset / RETURN_TIME);
+            ratio = 1 - Math.max(0, Math.min(ratio, 1));
+            offsetX = (this.maxBeyond.beyondX * ratio) - beyond.beyondX;
+        }
+        if (beyond.beyondY !== 0) {
+            let timeOffset = (timing - this.y.startInchingTime) > RETURN_TIME ? RETURN_TIME : (timing - this.y.startInchingTime);
+            let ratio = this.returnBezier.easing(timeOffset / RETURN_TIME);
+            ratio = 1 - Math.max(0, Math.min(ratio, 1));
+            offsetY = (this.maxBeyond.beyondY * ratio) - beyond.beyondY;
+        }
+
+        if (simulateBeyond.beyondX !== 0) {
+            let timeOffset = (timing - this.x.startInchingTime) > RETURN_TIME ? RETURN_TIME : (timing - this.x.startInchingTime);
+            let ratio = this.returnBezier.easing(timeOffset / RETURN_TIME);
+            ratio = 1 - Math.max(0, Math.min(ratio, 1));
+            simulateOffsetX = (this.simulateMaxBeyond.beyondX * ratio) - simulateBeyond.beyondX;
+        }
+        if (simulateBeyond.beyondY !== 0) {
+            let timeOffset = (timing - this.y.startInchingTime) > RETURN_TIME ? RETURN_TIME : (timing - this.y.startInchingTime);
+            let ratio = this.returnBezier.easing(timeOffset / RETURN_TIME);
+            ratio = 1 - Math.max(0, Math.min(ratio, 1));
+            simulateOffsetY = (this.simulateMaxBeyond.beyondY * ratio) - simulateBeyond.beyondY;
+        }
+
+        this.simulateClientRect.left += simulateOffsetX;
+        this.simulateClientRect.right += simulateOffsetX;
+        this.simulateClientRect.top += simulateOffsetY;
+        this.simulateClientRect.bottom += simulateOffsetY;
+
+        if (this.outputCoordinate instanceof Function) {
+            this.outputCoordinate({
+                moveX: offsetX,
+                moveY: offsetY,
+                left: targetRectBound.left + offsetX,
+                right: targetRectBound.right + offsetX,
+                top: targetRectBound.top + offsetY,
+                bottom: targetRectBound.bottom + offsetY,
+                simulate: {
+                    moveX: simulateOffsetX,
+                    moveY: simulateOffsetY,
+                    left: this.simulateClientRect.left,
+                    right: this.simulateClientRect.right,
+                    top: this.simulateClientRect.top,
+                    bottom: this.simulateClientRect.bottom
+                }
+            });
+        }
+
         window.requestAnimationFrame(this.updateElCoordinateForReturn);
     }
 
     calcOffset = async (xy, beyondXY, beforeBeyondXY, timing) => {
         let offset;
         if (beyondXY === 0) {
-            if (beforeBeyondXY === undefined || beforeBeyondXY !== 0) {
+            if (void(0) === beforeBeyondXY || beforeBeyondXY !== 0) {
                 xy.moveSpeed = xy.realTimeMoveSpeed;
             }
 
-            let ratio = 1 - this.inchingBezier.solve((timing - xy.startInchingTime) / 1500);
+            let timeOffset = (timing - xy.startInchingTime) > 1500 ? 1500 : (timing - xy.startInchingTime);
+            let ratio = 1 - this.inchingBezier.easing(timeOffset / 1500);
             ratio = Math.max(0, Math.min(ratio, 1));
             xy.realTimeMoveSpeed = xy.moveSpeed * ratio;
             // 由补偿换为按时间计算，更加准确（避免在高刷屏中动画执行速度变快）
@@ -216,10 +276,10 @@ export class Inertia {
 
             let totalRatio = 0;
             let expectMoveSpeedX = 0;
-            if (beforeBeyondXY === undefined || beforeBeyondXY === 0) {
+            if (void(0) === beforeBeyondXY || beforeBeyondXY === 0) {
                 xy.expectedMove = 0;
                 for (let i = this.frame; i < 250; i += this.frame) {
-                    let ratio = 1 - this.inchingBezier.solve(i / 250);
+                    let ratio = 1 - this.inchingBezier.easing(i / 250);
                     ratio = Math.max(0, Math.min(ratio, 1));
                     if (ratio < 0.5) {
                         break;
@@ -228,7 +288,7 @@ export class Inertia {
                 }
                 xy.expectedMove = totalRatio * xy.realTimeMoveSpeed * this.frame * 1;
 
-                if (beforeBeyondXY === undefined) {
+                if (void(0) === beforeBeyondXY) {
                     // mouseup 时已越界
                     // 对速度补偿
                     expectMoveSpeedX = beyondXY / totalRatio / this.frame / 1 * 0.5;
@@ -260,10 +320,11 @@ export class Inertia {
                 }
             }
 
-            let outofRatioX = this.inchingBezier.solve((timing - xy.outerStartInchingTime) / 150);
-            outofRatioX = Math.max(0, Math.min(outofRatioX, 1));
+            let timeOffset = (timing - xy.outerStartInchingTime) > 150 ? 150 : (timing - xy.outerStartInchingTime);
+            let outsideRatio = this.inchingBezier.easing(timeOffset / 150);
+            outsideRatio = Math.max(0, Math.min(outsideRatio, 1));
             if (timing - xy.outerStartInchingTime < 150) {
-                offset = (xy.expectedMove * outofRatioX) - beyondXY;
+                offset = (xy.expectedMove * outsideRatio) - beyondXY;
             } else {
                 xy.isReturn = true;
                 if (beyondXY < 0) {
@@ -283,9 +344,9 @@ export class Inertia {
             this.lastInchingTime = this.x.startInchingTime = this.y.startInchingTime = timing - this.frame;
         }
 
-        let beyond = this.checkBound();
+        let beyond = this.checkBound(this.targetEl.getBoundingClientRect());
 
-        if (!this.isInching || (beyond.allOver && (Math.abs(this.x.realTimeMoveSpeed) <= 0 && Math.abs(this.y.realTimeMoveSpeed) <= 0))) {
+        if (!this.isInching || (!beyond.escape && (Math.abs(this.x.realTimeMoveSpeed) <= 0 && Math.abs(this.y.realTimeMoveSpeed) <= 0))) {
             return;
         }
         if (timing - this.lastInchingTime > this.frame * 2) {
@@ -301,108 +362,140 @@ export class Inertia {
         this.x.startInchingTime = this.y.startInchingTime = Math.min(this.x.startInchingTime, this.y.startInchingTime);
 
         let result = await Promise.all([
-            this.calcOffset(this.x, beyond.beyondX, this.beforeBound?.beyondX, timing),
-            this.calcOffset(this.y, beyond.beyondY, this.beforeBound?.beyondY, timing)
+            this.calcOffset(this.x, beyond.beyondX, this.beforeBeyond?.beyondX, timing),
+            this.calcOffset(this.y, beyond.beyondY, this.beforeBeyond?.beyondY, timing)
         ]);
-        this.targetCoordinate[0] += result[0];
-        this.targetCoordinate[1] += result[1];
 
-        this.beforeBound = beyond;
+        if (this.outputCoordinate instanceof Function) {
+            this.outputCoordinate({
+                moveX: result[0],
+                moveY: result[1]
+            });
+        }
+
+        this.beforeBeyond = beyond;
         this.lastInchingTime = timing;
-        this.targetEl.style.transform = `translate(${this.targetCoordinate[0]}px, ${this.targetCoordinate[1]}px)`;
 
         window.requestAnimationFrame(this.updateElCoordinateForUp);
     }
 
-    updateElCoordinate = () => {
-        let offsetX = this.currentCoordinate[0] - this.beforeCoordinate[0];
-        let offsetY = this.currentCoordinate[1] - this.beforeCoordinate[1];
+    updateElCoordinateByMove = () => {
+        let offsetX, offsetY, simulateOffsetX, simulateOffsetY;
+        offsetX = simulateOffsetX = this.currentCoordinate[0] - this.beforeCoordinate[0];
+        offsetY = simulateOffsetY = this.currentCoordinate[1] - this.beforeCoordinate[1];
 
-        let beyond = this.checkBound();
-        // todo 测试
-        // beyond = {beyondX: 0, beyondY: 0};
+        let targetRectBound = this.targetEl.getBoundingClientRect();
+        let beyond = this.checkBound(targetRectBound);
+        let simulateBeyond = this.checkBound(this.simulateClientRect);
 
-        if (true) {
-            if (beyond.beyondX !== 0) {
-                this.targetCoordinate[0] += offsetX * this.dragBezier(beyond.beyondX);
-            } else {
-                this.targetCoordinate[0] += offsetX;
+        if (this.elastic) {
+            if (beyond.beyondX !== 0)
+                offsetX *= this.dragBezier(beyond.beyondX);
+            if (beyond.beyondY !== 0)
+                offsetY *= this.dragBezier(beyond.beyondY);
+
+            if (simulateBeyond.beyondX !== 0)
+                simulateOffsetX *= this.dragBezier(simulateBeyond.beyondX);
+            if (simulateBeyond.beyondY !== 0)
+                simulateOffsetY *= this.dragBezier(simulateBeyond.beyondY);
+
+            // 超过了限定范围
+            let exceed;
+            if (offsetX > 0) {
+                exceed = targetRectBound.left + offsetX - this.boundX[0] - this.elasticMaxDistance;
+                if (exceed > 0) offsetX -= exceed;
+            } else if (offsetX < 0) {
+                exceed = targetRectBound.right + offsetX - this.boundX[1] + this.elasticMaxDistance;
+                if (exceed < 0) offsetX -= exceed;
             }
-
-            if (beyond.beyondY !== 0) {
-                this.targetCoordinate[1] += offsetY * this.dragBezier(beyond.beyondY);
-            } else {
-                this.targetCoordinate[1] += offsetY;
+            if (offsetY > 0) {
+                exceed = targetRectBound.top + offsetY - this.boundY[0] - this.elasticMaxDistance;
+                if (exceed > 0) offsetY -= exceed;
+            } else if (offsetY < 0) {
+                exceed = targetRectBound.bottom + offsetY - this.boundY[1] + this.elasticMaxDistance;
+                if (exceed < 0) offsetY -= exceed;
             }
         } else {
-            let targetRectBound = this.targetEl.getBoundingClientRect();
-
             if (targetRectBound.left + offsetX > this.boundX[0]) {
-                this.targetCoordinate[0] = 0;
+                offsetX = this.boundX[0] - targetRectBound.left;
             } else if (targetRectBound.right + offsetX < this.boundX[1]) {
-                this.targetCoordinate[0] = -targetRectBound.width + (this.boundX[1] - this.boundX[0]);
-            } else {
-                this.targetCoordinate[0] += offsetX;
+                offsetX = this.boundX[1] - targetRectBound.right;
+            }
+            if (targetRectBound.top + offsetY > this.boundY[0]) {
+                offsetY = this.boundY[0] - targetRectBound.top;
+            } else if (targetRectBound.bottom + offsetY < this.boundY[1]) {
+                offsetY = this.boundY[1] - targetRectBound.bottom;
             }
 
-            if (targetRectBound.top + offsetY > this.boundY[0]) {
-                this.targetCoordinate[1] = 0;
-            } else if (targetRectBound.bottom + offsetY < this.boundY[1]) {
-                this.targetCoordinate[1] = -targetRectBound.height + (this.boundY[1] - this.boundY[0]);
-            } else {
-                this.targetCoordinate[1] += offsetY;
+            if (this.simulateClientRect.left + simulateOffsetX > this.boundX[0]) {
+                simulateOffsetX = this.boundX[0] - this.simulateClientRect.left;
+            } else if (this.simulateClientRect.right + simulateOffsetX < this.boundX[1]) {
+                simulateOffsetX = this.boundX[1] - this.simulateClientRect.right;
+            }
+            if (this.simulateClientRect.top + simulateOffsetY > this.boundY[0]) {
+                simulateOffsetY = this.boundY[0] - this.simulateClientRect.top;
+            } else if (this.simulateClientRect.bottom + simulateOffsetY < this.boundY[1]) {
+                simulateOffsetY = this.boundY[1] - this.simulateClientRect.bottom;
             }
         }
 
-        this.targetEl.style.transform = `translate(${this.targetCoordinate[0]}px, ${this.targetCoordinate[1]}px)`;
+        this.simulateClientRect.left += simulateOffsetX;
+        this.simulateClientRect.right += simulateOffsetX;
+        this.simulateClientRect.top += simulateOffsetY;
+        this.simulateClientRect.bottom += simulateOffsetY;
+
+        if (this.outputCoordinate instanceof Function) {
+            this.outputCoordinate({
+                moveX: offsetX,
+                moveY: offsetY,
+                left: targetRectBound.left + offsetX,
+                right: targetRectBound.right + offsetX,
+                top: targetRectBound.top + offsetY,
+                bottom: targetRectBound.bottom + offsetY,
+                simulate: {
+                    moveX: simulateOffsetX,
+                    moveY: simulateOffsetY,
+                    left: this.simulateClientRect.left,
+                    right: this.simulateClientRect.right,
+                    top: this.simulateClientRect.top,
+                    bottom: this.simulateClientRect.bottom
+                }
+            });
+        }
 
         this.beforeCoordinate = this.currentCoordinate;
         this.isUpdateElCoordinate = false;
     }
 
-    sss = 200;
-    /**
-     * https://easings.net/
-     * @param {number} beyond 偏移像素
-     * @returns 比例
-     */
-    easeOut = (beyond) => {
-        let ratio = Math.min(Math.abs(beyond), this.sss) / this.sss;
-        ratio = 1 - Math.pow(1 - ratio, 1.6);
-        return 1 - Math.max(0.01, Math.min(ratio, 0.99));
-    }
-
     dragBezier = (beyond) => {
-        let ratio = Math.min(Math.abs(beyond), this.sss) / this.sss;
-        ratio = this.bezier.solve(ratio);
-        return 1 - Math.max(0.01, Math.min(ratio, 0.99));
+        let ratio = Math.min(Math.abs(beyond), this.elasticMaxDistance) / this.elasticMaxDistance;
+        ratio = this.bezier.easing(ratio);
+        return 1 - Math.max(0, Math.min(ratio, 1));
     }
 
-    checkBound = () => {
+    checkBound = (clientRect) => {
         let beyondX = 0, beyondY = 0;
 
-        let targetRectBound = this.targetEl.getBoundingClientRect();
-
-        if (this.boundX) {
-            if (!Number.isNaN(this.boundX[0]) && targetRectBound.left > this.boundX[0]) {
-                beyondX = targetRectBound.left - this.boundX[0];
-            } else if (!Number.isNaN(this.boundX[1]) && targetRectBound.right < this.boundX[1]) {
-                beyondX = targetRectBound.right - this.boundX[1];
+        if (Array.isArray(this.boundX)) {
+            if (Number.isFinite(this.boundX[0]) && clientRect.left > this.boundX[0]) {
+                beyondX = clientRect.left - this.boundX[0];
+            } else if (Number.isFinite(this.boundX[1]) && clientRect.right < this.boundX[1]) {
+                beyondX = clientRect.right - this.boundX[1];
             }
         }
 
-        if (this.boundY) {
-            if (!Number.isNaN(this.boundY[0]) && targetRectBound.top > this.boundY[0]) {
-                beyondY = targetRectBound.top - this.boundY[0];
-            } else if (!Number.isNaN(this.boundY[1]) && targetRectBound.bottom < this.boundY[1]) {
-                beyondY = targetRectBound.bottom - this.boundY[1];
+        if (Array.isArray(this.boundY)) {
+            if (Number.isFinite(this.boundY[0]) && clientRect.top > this.boundY[0]) {
+                beyondY = clientRect.top - this.boundY[0];
+            } else if (Number.isFinite(this.boundY[1]) && clientRect.bottom < this.boundY[1]) {
+                beyondY = clientRect.bottom - this.boundY[1];
             }
         }
 
         return {
             beyondX: beyondX,
             beyondY: beyondY,
-            allOver: beyondX === 0 && beyondY === 0
+            escape: beyondX !== 0 || beyondY !== 0
         }
     }
 

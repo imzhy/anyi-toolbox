@@ -26,14 +26,16 @@
         #inertia {
             width: 200px;
             height: 200px;
-            border: 1px dashed red;
+            border: 20px dashed red;
             margin-top: 200px;
+            /*overflow: hidden;*/
+        }
 
-            > #inertia-move {
-                width: 800px;
-                height: 800px;
-                border: 1px solid rgb(212, 0, 255);
-            }
+        #inertia > #inertia-move {
+            width: 800px;
+            height: 800px;
+            border: 1px solid rgb(212, 0, 255);
+            /*transform: rotate(45deg);*/
         }
     </style>
 </head>
@@ -46,13 +48,28 @@
 <script type="module">
     import {Inertia} from "./Inertia.js";
 
+    let inertia = document.getElementById("inertia");
     let inertiaMove = document.getElementById("inertia-move");
-    let content = document.getElementById("inertia");
-    let rect = content.getBoundingClientRect();
+
+    let inertiaRect = inertia.getBoundingClientRect();
+
+    let boundX = [inertiaRect.left, inertiaRect.right];
+    let boundY = [inertiaRect.top, inertiaRect.bottom];
+
+    let x = 0;
+    let y = 0;
 
     new Inertia({
-        // boundX: [0, rect.width - inertiaMove.clientWidth],
-        // boundY: [0, rect.height - inertiaMove.clientHeight],
+        boundX,
+        boundY,
+        // elastic: false,
+        outputCoordinate: (coordinate) => {
+            // console.table(coordinate);
+            x += coordinate.moveX;
+            y += coordinate.moveY;
+            // console.log(x, y);
+            inertiaMove.style.transform = `translate(${x}px, ${y}px)`;
+        }
     });
 </script>
 </body>
